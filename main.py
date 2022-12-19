@@ -28,6 +28,9 @@ class Second(StatesGroup):
     gradation_transformations_two = State()
     gradation_transformations_three = State()
 
+class Third(StatesGroup):
+    interpolation_one = State()
+    interpolation_second = State()
 
 settings = Settings.from_json(pathlib.Path('./config.json'))
 bot = Bot(token=settings.telegram_bot_token)
@@ -44,13 +47,45 @@ async def main_send_welcome(message: types.Message):
     Args:
         message: Message from telegram update.
     """
-    await message.answer("Choose one of the commands: \n1. /work_with_images \n2. /gradation_transformations")
+    await message.answer("Выберите одну из операций: "
+                         "\n1. /work_with_images "
+                         "\n2. /gradation_transformations "
+                         "\n3. /interpolation" )
+
+
+@dp.message_handler(commands=['interpolation'], state=None)
+async def second_send_welcome(message: types.Message):
+    await message.answer("Введите изображение для интерполяции:")
+    await Third.interpolation_one.set()
 
 
 @dp.message_handler(commands=['gradation_transformations'], state=None)
 async def second_send_welcome(message: types.Message):
-    await message.answer("Enter the picture:")
+    await message.answer("Введите изображение:")
     await Second.gradation_transformations_one.set()
+
+
+@dp.message_handler(content_types='photo', state=Third.interpolation_one)
+async def inter_first(message: types.Message, state: FSMContext):
+    photo = get_max_sized_photo(message.photo)
+    photo_id = photo.file_id
+    file = await bot.get_file(photo_id)
+    file_path = file.file_path
+
+    photo_path = settings.project_static_path / f'{message.from_user.id}_interpolate_lab_base_photo.jpg'
+
+    await state.update_data(base_image=photo_path)
+    await bot.download_file(file_path, photo_path)
+
+    paths = create_histogram(str(photo_path), settings, message.from_user.id)
+
+    media = create_media(paths)
+
+    await message.answer_media_group(media=media)
+    await message.answer(f'Гистограммы распредления яркости.')
+
+    await message.answer("Давайте сделаем интерполяцию, введите координаты точек с 0 до 255 (обязательны точки: 0 0 и 255 255):")
+    await Third.interpolation_second.set()
 
 
 @dp.message_handler(content_types='photo', state=Second.gradation_transformations_one)
@@ -76,6 +111,7 @@ async def second_send_welcome(message: types.Message, state: FSMContext):
     media = create_media(paths)
 
     await message.answer_media_group(media=media)
+    await message.answer(f'Гистограммы распредления яркости.')
 
     key_board = ReplyKeyboardMarkup(resize_keyboard=True)
     first_button = KeyboardButton('darker')
@@ -84,7 +120,7 @@ async def second_send_welcome(message: types.Message, state: FSMContext):
     four_button = KeyboardButton('lighter')
     key_board.row(first_button, second_button, third_button, four_button)
 
-    await message.answer('Choose on of the operations:', reply_markup=key_board)
+    await message.answer('Выберите одну из операций:', reply_markup=key_board)
     await Second.gradation_transformations_two.set()
 
 
@@ -100,32 +136,34 @@ async def update_photos(message: types.Message, state: FSMContext):
     picture_path = result['base_image']
     path = operations(message.text, picture_path, message.from_user.id)
     if path is None:
-        await message.answer('Error! Try again!')
+        await message.answer('Ошибка! Попробуйте снова!')
         return
 
     plot_path = plot_function(message.text, message.from_user.id, picture_path.parent)
     if plot_path is None:
-        await message.answer('Error! Try again!')
+        await message.answer('Ошибка! Попробуйте снова!')
         return
 
     await message.reply('Ok', reply_markup=ReplyKeyboardRemove())
 
     chat_id = message.chat.id
     with plot_path.open('rb') as open_plot_photo:
-        await bot.send_photo(chat_id, open_plot_photo, caption=f'{message.text} function')
+        await bot.send_photo(chat_id, open_plot_photo, caption=f'Была применина следующая функция: {message.text}.')
 
     with path.open('rb') as open_photo:
-        await bot.send_photo(chat_id, open_photo)
+        await bot.send_photo(chat_id, open_photo, caption=f'Изображение после обработки.')
 
     paths = create_histogram(str(path), settings, message.from_user.id)
     media = create_media(paths)
     await message.answer_media_group(media=media)
+    await message.answer(f'Гистограммы распредления яркости.')
+    #
+    # await message.answer("Let's make some interpolation, enter the coordinates in range from 0 to 255:")
+    await state.finish()
+    await message.answer("Введите /start для того, чтобы начать работу.")
 
-    await message.answer("Let's make some interpolation, enter the coordinates in range from 0 to 255:")
-    await Second.gradation_transformations_three.set()
 
-
-@dp.message_handler(content_types='text', state=Second.gradation_transformations_three)
+@dp.message_handler(content_types='text', state=Third.interpolation_second)
 async def make_interpolation(message: types.Message, state: FSMContext):
     """"Draw and send plots, send histograms and image after interpolation.
 
@@ -135,23 +173,27 @@ async def make_interpolation(message: types.Message, state: FSMContext):
     """
     result = await state.get_data()
     image_path = result["base_image"]
-    path_points, path_plot, inter_path = begin_draw_plots(message.text, image_path, message.from_user.id, settings)
+    try:
+        path_points, path_plot, inter_path = begin_draw_plots(message.text, image_path, message.from_user.id, settings)
 
-    chat_id = message.chat.id
+        chat_id = message.chat.id
 
-    with path_points.open('rb') as file_points, \
-            path_plot.open('rb') as file_plot, \
-            inter_path.open('rb') as file_inter_pict:
-        await bot.send_photo(chat_id, file_points, caption='Your points')
-        await bot.send_photo(chat_id, file_plot, caption='Your interpolation')
-        await bot.send_photo(chat_id, file_inter_pict, caption='Your interpolate image')
+        with path_points.open('rb') as file_points, \
+                path_plot.open('rb') as file_plot, \
+                inter_path.open('rb') as file_inter_pict:
+            await bot.send_photo(chat_id, file_points, caption='Ваши введенные точки.')
+            await bot.send_photo(chat_id, file_plot, caption='Ваша интерполяционная функция.')
+            await bot.send_photo(chat_id, file_inter_pict, caption='Ваша интерполяционное изображение.')
 
-    paths = create_histogram(inter_path, settings, message.from_user.id)
+        paths = create_histogram(inter_path, settings, message.from_user.id)
+    except ValueError:
+        await message.answer('Неправильно введенны точки. 1-ая точка 0 0, последняя точка 255 255!')
     media = create_media(paths)
     await message.answer_media_group(media=media)
+    await message.answer(f'Гистограммы распредления яркости.')
 
     await state.finish()
-    await message.answer("Enter /start to begin again")
+    await message.answer("Введите /start для того, чтобы начать работу.")
 
 
 @dp.message_handler(commands=['work_with_images'], state=None)
@@ -161,7 +203,7 @@ async def first_send_welcome(message: types.Message):
     Args:
         message: Message from telegram updates.
     """
-    await message.answer("Enter the first picture:\n")
+    await message.answer("Введите первое изображение:\n")
     await First.work_with_images_one.set()
 
 
@@ -183,7 +225,7 @@ async def answer_q1(message: types.Message, state: FSMContext):
 
     await state.update_data(first_name=photo_path)
 
-    await message.answer("Enter the second picture:\n")
+    await message.answer("Введите второе изображение:\n")
 
     await First.work_with_images_two.set()
 
@@ -220,7 +262,7 @@ async def answer_q2(message: types.Message, state: FSMContext):
     new_key_board.row(second_button, third_button, four_button)
     new_key_board.row(five_button, six_button, seven_button)
 
-    await message.answer(text="Choose the channel to work:", reply_markup=new_key_board)
+    await message.answer(text="Выберите канал, над которым надо работать.", reply_markup=new_key_board)
 
     await First.work_with_images_three.set()
 
@@ -242,15 +284,15 @@ async def new_command(message: types.Message, state: FSMContext):
     second_button = KeyboardButton(text="AVER")
     third_button = KeyboardButton(text="MAX")
     four_button = KeyboardButton(text="MIN")
-    five_button = KeyboardButton(text="CIRCLE MASK")
-    six_button = KeyboardButton(text="SQUARE MASK")
-    seven_button = KeyboardButton(text="RECTANGLE MASK")
+    # five_button = KeyboardButton(text="CIRCLE MASK")
+    # six_button = KeyboardButton(text="SQUARE MASK")
+    # seven_button = KeyboardButton(text="RECTANGLE MASK")
 
     key_board.row(first_button, second_button)
     key_board.row(third_button, four_button)
-    key_board.row(five_button, six_button, seven_button)
+    # key_board.row(five_button, six_button, seven_button)
 
-    await message.answer(text="Choose:", reply_markup=key_board)
+    await message.answer(text="Выберите операцию:", reply_markup=key_board)
 
     await First.work_with_images_four.set()
 
@@ -272,13 +314,13 @@ async def command(message: types.Message, state: FSMContext):
     path = process_operation(message.text, rgb_message, first_path, second_path, user_id)
 
     if path is None:
-        await message.answer('Something is going wrong! Try again!')
+        await message.answer('Что-то пошло не так! Начните сначала!')
         return
 
     with path.open('rb') as file:
         await bot.send_photo(message.chat.id, file)
 
-    await message.answer(f"It is {message.text}, enter /start to begin again", reply_markup=ReplyKeyboardRemove())
+    await message.answer(f"Это {message.text}, введите /start для того, чтобы начать работу.", reply_markup=ReplyKeyboardRemove())
     await state.finish()
 
 

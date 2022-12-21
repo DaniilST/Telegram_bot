@@ -70,7 +70,7 @@ __Состав команды:__
 1. Степанов Даниил ИДМ-22-01 (Роли: РП, СП, ВН, НИ, БА, АД, КО, ПП).
 
 ## :robot: Landing page
-Landing page доступен по ссылке: https://landing1-j90370996.6e7oz.landing.myjino.ru/
+[Landing page](https://landing1-j90370996.6e7oz.landing.myjino.ru/)
 
 
 
